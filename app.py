@@ -1,0 +1,974 @@
+#!/usr/bin/env python3
+"""
+音声テキスト変換ツール（GUI版）
+進行状況を表示しながら音声をテキストへ変換する PyQt6 アプリケーション。
+"""
+
+import sys
+import os
+import threading
+import json
+from pathlib import Path
+from datetime import datetime
+from typing import Optional
+from dotenv import load_dotenv
+import whisper
+
+load_dotenv()
+
+# OpenAI API キーを環境変数から取得
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, 
+                            QWidget, QPushButton, QLabel, QFileDialog, QProgressBar,
+                            QTextEdit, QComboBox, QGroupBox, QMessageBox,
+                            QListWidget, QListWidgetItem, QSplitter, QFrame, QDialog, QDialogButtonBox)
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QTimer
+from PyQt6.QtGui import QFont, QIcon, QPixmap
+
+# Import our custom modules
+try:
+    from summarizer import Summarizer
+    from audio import ConversionWorker
+except ImportError as e:
+    print(f"警告: カスタムモジュールを読み込めませんでした: {e}")
+    
+    Summarizer = None
+    ConversionWorker = None
+
+
+SUMMARY_CONFIGS = [
+    {
+        "summary_key": "サービス担当者会議記録（保存用）標準様式　各種加算標準様式（Excel形式：92KB）.xlsx::特定事業所加算　保存様式",
+        "run_method": "run_sheet1",
+        "insert_method": "insert_sheet1",
+        "status_label": "特定事業所加算 保存様式"
+    },
+    {
+        "summary_key": "サービス担当者会議記録（保存用）標準様式　各種加算標準様式（Excel形式：92KB）.xlsx::入院時情報提供書",
+        "run_method": "run_sheet2",
+        "insert_method": "insert_sheet2",
+        "status_label": "入院時情報提供書"
+    },
+    {
+        "summary_key": "サービス担当者会議記録（保存用）標準様式　各種加算標準様式（Excel形式：92KB）.xlsx::退院・退所加算　保存様式",
+        "run_method": "run_sheet3",
+        "insert_method": "insert_sheet3",
+        "status_label": "退院・退所加算 保存様式"
+    },
+    {
+        "summary_key": "サービス担当者会議記録（保存用）標準様式　各種加算標準様式（Excel形式：92KB）.xlsx::居宅介護支援事業所等連携加算　保存様式",
+        "run_method": "run_sheet4",
+        "insert_method": "insert_sheet4",
+        "status_label": "居宅介護支援事業所等連携加算 保存様式"
+    },
+    {
+        "summary_key": "サービス担当者会議記録（保存用）標準様式　各種加算標準様式（Excel形式：92KB）.xlsx::医療・保育・教育連携加算　保存様式",
+        "run_method": "run_sheet5",
+        "insert_method": "insert_sheet5",
+        "status_label": "医療・保育・教育連携加算 保存様式"
+    },
+    {
+        "summary_key": "サービス担当者会議記録（保存用）標準様式　各種加算標準様式（Excel形式：92KB）.xlsx::サービス担当者会議記録　保存様式",
+        "run_method": "run_sheet6",
+        "insert_method": "insert_sheet6",
+        "status_label": "サービス担当者会議記録 保存様式"
+    },
+    {
+        "summary_key": "サービス担当者会議記録（保存用）標準様式　各種加算標準様式（Excel形式：92KB）.xlsx::サービス提供時モニタリング記録　保存様式",
+        "run_method": "run_sheet7",
+        "insert_method": "insert_sheet7",
+        "status_label": "サービス提供時モニタリング記録 保存様式"
+    },
+    {
+        "summary_key": "サービス担当者会議記録（保存用）標準様式　各種加算標準様式（Excel形式：92KB）.xlsx::体制加算　記録",
+        "run_method": "run_sheet8",
+        "insert_method": "insert_sheet8",
+        "status_label": "体制加算 記録"
+    },
+    {
+        "summary_key": "様式11　モニタリング報告書（Excel形式：45KB）.xlsx",
+        "run_method": "run_sheet_monitor",
+        "insert_method": "insert_monitor_sheet",
+        "status_label": "モニタリング報告書"
+    },
+    {
+        "summary_key": "様式4　サービス等利用計画案・障害児支援利用計画案（Excel形式：45KB）.xlsx",
+        "run_method": "run_sheet_proposedPlan",
+        "insert_method": "insert_proposedPlan_sheet",
+        "status_label": "サービス等利用計画案"
+    },
+    {
+        "summary_key": "様式8　サービス等利用計画・障害児支援利用計画（Excel形式：46KB）.xlsx",
+        "run_method": "run_sheet_plan",
+        "insert_method": "insert_Plan_sheet",
+        "status_label": "サービス等利用計画"
+    },
+    {
+        "summary_key": "様式2、3　アセスメント票（訪問票兼生活支援アセスメント票）（Excel形式：44KB）.xlsx",
+        "run_method": "run_sheet_assessment",
+        "insert_method": "insert_assessment_sheet",
+        "status_label": "アセスメント票"
+    },
+]
+
+SUMMARY_KEYS = [cfg["summary_key"] for cfg in SUMMARY_CONFIGS]
+SUMMARY_KEY_SET = set(SUMMARY_KEYS)
+
+class StatusDialog(QDialog):
+    """ターミナルの代わりに処理状況を表示するダイアログ。"""
+    
+    def __init__(self, parent=None, title="処理中"):
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setModal(True)
+        self.setFixedSize(400, 200)
+        
+        layout = QVBoxLayout()
+        
+        # ステータスラベル
+        self.status_label = QLabel("初期化しています…")
+        self.status_label.setWordWrap(True)
+        self.status_label.setStyleSheet("QLabel { font-size: 12px; padding: 10px; }")
+        layout.addWidget(self.status_label)
+        
+        # 進捗バー
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
+        
+        # 詳細表示欄
+        self.details_text = QTextEdit()
+        self.details_text.setMaximumHeight(80)
+        self.details_text.setReadOnly(True)
+        self.details_text.setVisible(False)
+        layout.addWidget(self.details_text)
+        
+        # ボタン
+        self.button_box = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel)
+        self.button_box.rejected.connect(self.reject)
+        layout.addWidget(self.button_box)
+        
+        self.setLayout(layout)
+        
+    def update_status(self, message, show_progress=False, progress_value=None):
+        """ステータスメッセージを更新し、必要に応じて進捗を表示する。"""
+        self.status_label.setText(message)
+        if show_progress:
+            self.progress_bar.setVisible(True)
+            if progress_value is not None:
+                self.progress_bar.setValue(progress_value)
+        else:
+            self.progress_bar.setVisible(False)
+        QApplication.processEvents()
+        
+    def add_detail(self, detail):
+        """詳細欄にメッセージを追加する。"""
+        self.details_text.setVisible(True)
+        self.details_text.append(detail)
+        QApplication.processEvents()
+        
+    def show_success(self, message):
+        """成功メッセージを表示し、OK ボタンを有効化する。"""
+        self.status_label.setText(f"✅ {message}")
+        self.status_label.setStyleSheet("QLabel { color: green; font-weight: bold; font-size: 12px; padding: 10px; }")
+        self.button_box.clear()
+        self.button_box.addButton(QDialogButtonBox.StandardButton.Ok)
+        self.button_box.accepted.connect(self.accept)
+        
+    def show_error(self, message):
+        """エラーメッセージを表示し、OK ボタンを有効化する。"""
+        self.status_label.setText(f"❌ {message}")
+        self.status_label.setStyleSheet("QLabel { color: red; font-weight: bold; font-size: 12px; padding: 10px; }")
+        self.button_box.clear()
+        self.button_box.addButton(QDialogButtonBox.StandardButton.Ok)
+        self.button_box.accepted.connect(self.accept)
+
+
+class SummarizationWorker(QThread):
+    """Worker thread for text summarization using OpenAI."""
+    
+    progress_updated = pyqtSignal(int)
+    status_updated = pyqtSignal(str)
+    summarization_completed = pyqtSignal(str)  # summarized text
+    summarization_failed = pyqtSignal(str)  # error message
+    
+    def __init__(self, text, api_key=None, language='ja-JP'):
+        super().__init__()
+        self.text = text
+        self.api_key = api_key
+        self.language = language
+    
+    def run(self):
+        try:
+            self.status_updated.emit("Initializing OpenAI client...")
+            self.progress_updated.emit(5)
+            
+            if not Summarizer:
+                raise Exception("OpenAI client not available. Please check dependencies.")
+            
+            client = Summarizer(self.api_key, self.text, self.language)
+            self.progress_updated.emit(5)
+            
+            self.status_updated.emit("Analyzing Excel files...")
+            self.progress_updated.emit(10)
+            
+            self.status_updated.emit("Extracting answers based on Excel structure...")
+            self.progress_updated.emit(15)
+            sections = []
+            total_sections = len(SUMMARY_CONFIGS)
+
+            for idx, cfg in enumerate(SUMMARY_CONFIGS, start=1):
+                status_label = cfg["status_label"]
+                run_method_name = cfg["run_method"]
+                run_method = getattr(client, run_method_name, None)
+
+                if not callable(run_method):
+                    section_content = json.dumps({"error": f"Method {run_method_name} not found"}, ensure_ascii=False)
+                    self.status_updated.emit(f"⚠️ {status_label} の処理メソッドが見つかりませんでした")
+                else:
+                    try:
+                        self.status_updated.emit(f"{status_label} を解析しています...")
+                        section_content = run_method().strip()
+                    except Exception as exc:
+                        section_content = json.dumps({"error": str(exc)}, ensure_ascii=False)
+                        self.status_updated.emit(f"⚠️ {status_label} の解析に失敗しました: {exc}")
+
+                sections.append(f"{cfg['summary_key']}:\n{section_content}")
+                progress = 15 + int((idx / total_sections) * 75)
+                self.progress_updated.emit(min(progress, 95))
+
+            summary = "\n--------------------------------\n".join(sections)
+            self.progress_updated.emit(100)
+            
+            self.status_updated.emit("✓ Summarization completed!")
+            self.summarization_completed.emit(summary)
+            
+        except Exception as e:
+            self.summarization_failed.emit(str(e))
+
+
+class ClassificationWorker(QThread):
+    """Worker thread for text classification and Excel insertion."""
+    
+    progress_updated = pyqtSignal(int)
+    status_updated = pyqtSignal(str)
+    classification_completed = pyqtSignal(dict)  # classification results
+    classification_failed = pyqtSignal(str)  # error message
+    
+    def __init__(self, summarized_text, api_key=None, output_dir: Optional[Path] = None):
+        super().__init__()
+        self.summarized_text = summarized_text
+        self.api_key = api_key
+        self.output_dir = Path(output_dir) if output_dir else None
+    
+    def _extract_separate_texts(self, summary_text):
+        """Extract separate texts from summary by splitting on separators and parse JSON to match clarify_sheet1 format."""
+        extracted_texts = {}
+        
+        if not summary_text or not summary_text.strip():
+            return extracted_texts
+        
+        # Split by separator line
+        sections = summary_text.split("--------------------------------")
+        
+        for section in sections:
+            lines = [line.rstrip() for line in section.split("\n") if line.strip()]
+            if not lines:
+                continue
+
+            header_line = lines[0]
+            if header_line.endswith(":"):
+                header_key = header_line[:-1].strip()
+            else:
+                header_key = header_line.strip()
+
+            if header_key not in SUMMARY_KEY_SET:
+                continue
+
+            content = "\n".join(lines[1:]).strip()
+
+            if not content:
+                parsed_data = {}
+            else:
+                try:
+                    parsed_data = json.loads(content)
+                except json.JSONDecodeError:
+                    parsed_data = {"content": content}
+
+            extracted_texts[header_key] = parsed_data
+        
+        return extracted_texts
+    
+    def run(self):
+        try:
+            self.status_updated.emit("Initializing OpenAI client...")
+            self.progress_updated.emit(10)
+            
+            # Extract separate texts from summary
+            self.status_updated.emit("Extracting separate texts from summary...")
+            text = self.summarized_text
+            extracted_texts = self._extract_separate_texts(text)
+            self.progress_updated.emit(15)
+            
+            # Log extracted texts for debugging
+            if extracted_texts:
+                self.status_updated.emit(f"Extracted {len(extracted_texts)} separate text sections: {', '.join(extracted_texts.keys())}")
+            
+            if not Summarizer:
+                raise Exception("OpenAI client not available. Please check dependencies.")
+            
+            client = Summarizer(api_key=self.api_key, output_dir=self.output_dir)
+            self.progress_updated.emit(5)
+            
+            self.status_updated.emit("Classifying text for Excel files...")
+            self.progress_updated.emit(10)
+
+            insertion_results = {}
+            total_sections = len(SUMMARY_CONFIGS)
+
+            for idx, cfg in enumerate(SUMMARY_CONFIGS, start=1):
+                summary_key = cfg["summary_key"]
+                status_label = cfg["status_label"]
+                insert_method_name = cfg["insert_method"]
+                insert_method = getattr(client, insert_method_name, None)
+
+                data = extracted_texts.get(summary_key)
+                if isinstance(data, dict):
+                    payload = data
+                    has_data = bool(data)
+                elif data is None:
+                    payload = {}
+                    has_data = False
+                else:
+                    payload = {"content": data}
+                    has_data = True
+
+                if not callable(insert_method):
+                    insertion_results[summary_key] = {"success": False, "error": f"Method {insert_method_name} not found"}
+                    self.status_updated.emit(f"⚠️ {status_label} の挿入メソッドが見つかりませんでした")
+                    continue
+
+                try:
+                    action_msg = "データ付きテンプレートに挿入" if has_data else "テンプレートをコピー"
+                    self.status_updated.emit(f"{status_label} ({action_msg}) を処理しています...")
+                    saved_path = insert_method(payload)
+                    insertion_results[summary_key] = {"success": True, "path": saved_path, "has_data": has_data}
+                    if has_data:
+                        self.status_updated.emit(f"✓ {status_label} への挿入が完了しました！")
+                    else:
+                        self.status_updated.emit(f"✓ {status_label} のテンプレートを出力しました (データなし)")
+                except Exception as exc:
+                    insertion_results[summary_key] = {"success": False, "error": str(exc)}
+                    self.status_updated.emit(f"⚠️ {status_label} への挿入に失敗しました: {exc}")
+
+                progress = 0 + int((idx / total_sections) * 100)
+                self.progress_updated.emit(min(progress, 100))
+
+            self.progress_updated.emit(100)
+            self.status_updated.emit("✓ Classification completed!")
+
+            ordered_classification = {key: extracted_texts.get(key) for key in SUMMARY_KEYS if key in extracted_texts}
+            results_payload = {
+                "classification": ordered_classification,
+                "insertion": insertion_results,
+                "output_dir": str(self.output_dir) if self.output_dir else None
+            }
+
+            self.classification_completed.emit(results_payload)
+            
+        except Exception as e:
+            self.classification_failed.emit(str(e))
+
+
+class AudioToTextGUI(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.current_worker = None
+        self.summarization_worker = None
+        self.classification_worker = None
+        self.summarized_text = ""
+        self.init_ui()
+        self.model = whisper.load_model("small")
+        
+    def init_ui(self):
+        self.setWindowTitle("Audio to Text Converter with AI Analysis")
+        self.setGeometry(100, 100, 1000, 700)
+        self.setFixedSize(1000, 700)
+        
+        # Create central widget
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        # Create main layout
+        main_layout = QVBoxLayout(central_widget)
+        
+        # Create splitter for resizable panels
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_layout.addWidget(splitter)
+        
+        # Left panel - File selection and controls
+        left_panel = self.create_left_panel()
+        splitter.addWidget(left_panel)
+        
+        # Right panel - Progress and results
+        right_panel = self.create_right_panel()
+        splitter.addWidget(right_panel)
+        
+        # Set splitter proportions
+        splitter.setSizes([350, 650])
+        
+        # Status bar
+        self.statusBar().showMessage("Ready to convert audio files")
+        
+    def create_left_panel(self):
+        """Create the left panel with file selection and controls."""
+        panel = QFrame()
+        panel.setFrameStyle(QFrame.Shape.StyledPanel)
+        layout = QVBoxLayout(panel)
+        
+        # File selection group
+        file_group = QGroupBox("File Selection")
+        file_layout = QVBoxLayout(file_group)
+        
+        # File path display
+        self.file_path_label = QLabel("No file selected")
+        self.file_path_label.setWordWrap(True)
+        self.file_path_label.setStyleSheet("QLabel { background-color: #f0f0f0; padding: 5px; border: 1px solid #ccc; color : black; }")
+        file_layout.addWidget(self.file_path_label)
+        
+        # File selection button
+        self.browse_button = QPushButton("Browse Audio File")
+        self.browse_button.clicked.connect(self.browse_file)
+        file_layout.addWidget(self.browse_button)
+        
+        layout.addWidget(file_group)
+        
+        # Settings group
+        settings_group = QGroupBox("Settings")
+        settings_layout = QVBoxLayout(settings_group)
+        
+        # Language selection
+        lang_layout = QHBoxLayout()
+        lang_layout.addWidget(QLabel("Language:"))
+        self.language_combo = QComboBox()
+        self.language_combo.addItems([
+            "ja-JP (Japanese - Japan)",
+            "en-US (English - US)",
+            "en-GB (English - UK)", 
+            "es-ES (Spanish - Spain)",
+            "fr-FR (French - France)",
+            "de-DE (German - Germany)",
+            "it-IT (Italian - Italy)",
+            "pt-BR (Portuguese - Brazil)",
+            "ko-KR (Korean - South Korea)",
+            "zh-CN (Chinese - Simplified)"
+        ])
+        lang_layout.addWidget(self.language_combo)
+        settings_layout.addLayout(lang_layout)
+        
+        layout.addWidget(settings_group)
+        
+        # Control buttons
+        control_group = QGroupBox("Controls")
+        control_layout = QVBoxLayout(control_group)
+        
+        self.convert_button = QPushButton("Convert to Text")
+        self.convert_button.clicked.connect(self.start_conversion)
+        self.convert_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 10px; }")
+        control_layout.addWidget(self.convert_button)
+        
+        self.summarize_button = QPushButton("Extract Answers")
+        self.summarize_button.clicked.connect(self.summarize_text)
+        self.summarize_button.setEnabled(False)
+        self.summarize_button.setStyleSheet("QPushButton { background-color: #2196F3; color: white; font-weight: bold; padding: 10px; }")
+        control_layout.addWidget(self.summarize_button)
+        
+        self.classification_button = QPushButton("Classification")
+        self.classification_button.clicked.connect(self.classify_text)
+        self.classification_button.setEnabled(True)
+        self.classification_button.setStyleSheet("QPushButton { background-color: #FF9800; color: white; font-weight: bold; padding: 10px; }")
+        control_layout.addWidget(self.classification_button)
+        
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.clicked.connect(self.stop_conversion)
+        self.stop_button.setEnabled(False)
+        self.stop_button.setStyleSheet("QPushButton { background-color: #f44336; color: white; font-weight: bold; padding: 10px; }")
+        control_layout.addWidget(self.stop_button)
+        
+        layout.addWidget(control_group)
+        
+        # Add stretch to push everything to top
+        layout.addStretch()
+        
+        return panel
+    
+    def create_right_panel(self):
+        """Create the right panel with progress and results."""
+        panel = QFrame()
+        panel.setFrameStyle(QFrame.Shape.StyledPanel)
+        layout = QVBoxLayout(panel)
+        
+        # Progress group
+        progress_group = QGroupBox("Conversion Progress")
+        progress_layout = QVBoxLayout(progress_group)
+        
+        # Status label
+        self.status_label = QLabel("Ready")
+        self.status_label.setStyleSheet("QLabel { font-weight: bold; color: #333; }")
+        progress_layout.addWidget(self.status_label)
+        
+        # Progress bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        progress_layout.addWidget(self.progress_bar)
+        
+        # Loading indicator (spinning icon)
+        self.loading_label = QLabel("⏳")
+        self.loading_label.setVisible(False)
+        self.loading_label.setStyleSheet("QLabel { font-size: 24px; color: #4CAF50; }")
+        progress_layout.addWidget(self.loading_label)
+        
+        layout.addWidget(progress_group)
+        
+        # Results group
+        results_group = QGroupBox("Transcription & AI Analysis Results")
+        results_layout = QVBoxLayout(results_group)
+        
+        # Results text area
+        self.results_text = QTextEdit()
+        self.results_text.setReadOnly(True)  # Default to read-only mode
+        self.results_text.setPlaceholderText("Real-time transcription, extracted answers, and classification results will appear here...\nClick 'Toggle Edit Mode' to edit the content.")
+        # Set a clean font for better readability
+        font = QFont("Segoe UI", 10)
+        self.results_text.setFont(font)
+        # Set text color to make it more readable (read-only styling)
+        self.results_text.setStyleSheet("QTextEdit { color: #333; background-color: #f9f9f9; border: 1px solid #ccc; }")
+        # Connect text change signal to enable/disable summarize button
+        self.results_text.textChanged.connect(self.on_text_changed)
+        results_layout.addWidget(self.results_text)
+        
+        # Results buttons
+        results_button_layout = QHBoxLayout()
+        
+        self.save_button = QPushButton("Save to File")
+        self.save_button.clicked.connect(self.save_results)
+        self.save_button.setEnabled(False)
+        results_button_layout.addWidget(self.save_button)
+        
+        self.edit_toggle_button = QPushButton("Toggle Edit Mode")
+        self.edit_toggle_button.clicked.connect(self.toggle_edit_mode)
+        self.edit_toggle_button.setStyleSheet("QPushButton { background-color: #9C27B0; color: white; font-weight: bold; padding: 5px; }")
+        results_button_layout.addWidget(self.edit_toggle_button)
+        
+        self.clear_button = QPushButton("Clear Results")
+        self.clear_button.clicked.connect(self.clear_results)
+        results_button_layout.addWidget(self.clear_button)
+        
+        results_layout.addLayout(results_button_layout)
+        
+        layout.addWidget(results_group)
+        
+        return panel
+    
+    def browse_file(self):
+        """Browse for a single audio file."""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Audio File",
+            "",
+            "Audio Files (*.wav *.mp3 *.m4a *.flac *.aiff *.ogg);;All Files (*)"
+        )
+        
+        if file_path:
+            self.selected_file = file_path
+            self.file_path_label.setText(f"Selected: {Path(file_path).name}")
+    
+    
+    def start_conversion(self):
+        """Start the audio conversion process."""
+        if not hasattr(self, 'selected_file') or not self.selected_file:
+            QMessageBox.warning(self, "No File Selected", "Please select an audio file to convert.")
+            return
+        
+        if not os.path.exists(self.selected_file):
+            QMessageBox.warning(self, "File Not Found", "The selected file does not exist.")
+            return
+        
+        # Get language code
+        language_text = self.language_combo.currentText()
+        language_code = language_text.split(' ')[0]  # Extract language code
+        
+        # Disable controls during conversion
+        self.convert_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.loading_label.setVisible(True)
+        
+        # Clear previous results
+        self.results_text.clear()
+        self.save_button.setEnabled(False)
+        self.summarize_button.setEnabled(False)
+        self.classification_button.setEnabled(False)
+        
+        # Check if ConversionWorker is available
+        if not ConversionWorker:
+            QMessageBox.critical(self, "Error", "Audio conversion module not available. Please check dependencies.")
+            self.reset_ui()
+            return
+        
+        # Start conversion in worker thread
+        self.current_worker = ConversionWorker(self.selected_file, language_code, self.model)
+        self.current_worker.progress_updated.connect(self.update_progress)
+        self.current_worker.status_updated.connect(self.update_status)
+        self.current_worker.partial_result_updated.connect(self.update_partial_results)
+        self.current_worker.conversion_completed.connect(self.on_conversion_completed)
+        self.current_worker.conversion_failed.connect(self.on_conversion_failed)
+        self.current_worker.start()
+    
+    def stop_conversion(self):
+        """Stop the current conversion."""
+        if self.current_worker and self.current_worker.isRunning():
+            self.current_worker.terminate()
+            self.current_worker.wait()
+        
+        self.reset_ui()
+        self.status_label.setText("Conversion stopped by user")
+    
+    def update_progress(self, value):
+        """Update the progress bar."""
+        self.progress_bar.setValue(value)
+    
+    def update_status(self, message):
+        """Update the status label."""
+        self.status_label.setText(message)
+        self.statusBar().showMessage(message)
+    
+    def update_partial_results(self, text):
+        """Update the results text area with real-time updates."""
+        # Check if this is a transcription update (starts with 📝)
+        if text.startswith("📝"):
+            # Hide loading icon when transcription starts
+            self.loading_label.setVisible(False)
+            
+            # Extract just the transcription text
+            if "📝 Transcribing: " in text:
+                # This is the initial "Transcribing:" message
+                self.results_text.setPlainText("Transcribing: ")
+            else:
+                # This is actual transcription text
+                transcription_text = text.replace("📝 ", "")
+                self.results_text.setPlainText(transcription_text)
+        else:
+            # This is a status message, append to current text
+            current_text = self.results_text.toPlainText()
+            if current_text and not current_text.endswith('\n'):
+                current_text += '\n'
+            
+            # Add timestamp for status messages
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            
+            # Update the text area
+            self.results_text.setPlainText(current_text + f"[{timestamp}] {text}\n")
+        
+        # Auto-scroll to bottom to show latest updates
+        scrollbar = self.results_text.verticalScrollBar()
+        scrollbar.setValue(scrollbar.maximum())
+        
+        # Process events to ensure UI updates immediately
+        QApplication.processEvents()
+    
+    def on_conversion_completed(self, file_path, text):
+        """Handle successful conversion completion."""
+        # The text is already clean from the streaming display
+        final_text = text
+        
+        # Update the results with clean final text
+        self.results_text.setPlainText(final_text)
+        # Note: save_button and summarize_button will be enabled by on_text_changed()
+        # Keep classification button disabled until summarization is complete
+        self.classification_button.setEnabled(False)
+        self.reset_ui()
+        
+    def on_conversion_failed(self, file_path, error):
+        """Handle conversion failure."""
+        QMessageBox.critical(self, "Conversion Failed", f"Failed to convert {Path(file_path).name}:\n\n{error}")
+        self.reset_ui()
+    
+    def reset_ui(self):
+        """Reset UI elements after conversion."""
+        self.convert_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.progress_bar.setVisible(False)
+        self.loading_label.setVisible(False)
+        self.current_worker = None
+    
+    def save_results(self):
+        """Save the transcription results to a file."""
+        text = self.results_text.toPlainText()
+        if not text.strip():
+            QMessageBox.warning(self, "No Text", "No transcription results to save.")
+            return
+        
+        default_name = self._default_output_filename()
+        initial_path = str(Path.cwd() / default_name)
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Save Transcription",
+            initial_path,
+            "Text Files (*.txt);;All Files (*)"
+        )
+
+        if not file_path:
+            return
+
+        if not file_path.lower().endswith('.txt'):
+            file_path += '.txt'
+
+        if self.save_to_file(text, file_path):
+            QMessageBox.information(self, "Success", f"Transcription saved to:\n{file_path}")
+    
+    def _default_output_filename(self) -> str:
+        if getattr(self, 'selected_file', None):
+            base_name = Path(self.selected_file).stem
+            return f"{base_name}_transcript.txt"
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        return f"transcript_{timestamp}.txt"
+
+    def save_to_file(self, text, filename):
+        """Save text to file."""
+        try:
+            with open(filename, 'w', encoding='utf-8') as f:
+                f.write(text)
+            return True
+        except Exception as e:
+            QMessageBox.critical(self, "Save Error", f"Failed to save file:\n{str(e)}")
+            return False
+    
+    def clear_results(self):
+        """Clear the results text area."""
+        self.results_text.clear()
+        # Note: buttons will be disabled by on_text_changed()
+        self.classification_button.setEnabled(False)
+        self.summarized_text = ""
+    
+    def toggle_edit_mode(self):
+        """Toggle between read-only and editable mode for results panel."""
+        is_readonly = self.results_text.isReadOnly()
+        self.results_text.setReadOnly(not is_readonly)
+        
+        if is_readonly:
+            # Switch to editable mode (currently read-only, so make it editable)
+            self.results_text.setStyleSheet("QTextEdit { color: #333; background-color: #ffffff; border: 2px solid #4CAF50; }")
+            self.edit_toggle_button.setText("Switch to Read-Only")
+            self.edit_toggle_button.setStyleSheet("QPushButton { background-color: #4CAF50; color: white; font-weight: bold; padding: 5px; }")
+            self.statusBar().showMessage("Results panel is now editable - you can modify content before classification")
+        else:
+            # Switch to read-only mode (currently editable, so make it read-only)
+            self.results_text.setStyleSheet("QTextEdit { color: #333; background-color: #f9f9f9; border: 1px solid #ccc; }")
+            self.edit_toggle_button.setText("Toggle Edit Mode")
+            self.edit_toggle_button.setStyleSheet("QPushButton { background-color: #9C27B0; color: white; font-weight: bold; padding: 5px; }")
+            self.statusBar().showMessage("Results panel is now read-only")
+    
+    def on_text_changed(self):
+        """Handle text changes in the results panel."""
+        text = self.results_text.toPlainText().strip()
+        
+        # Enable summarize button if there's text and no worker is running
+        if text and not (hasattr(self, 'summarization_worker') and self.summarization_worker and self.summarization_worker.isRunning()):
+            self.summarize_button.setEnabled(True)
+        else:
+            self.summarize_button.setEnabled(False)
+        
+        # Enable save button if there's text
+        self.save_button.setEnabled(bool(text))
+    
+    def summarize_text(self):
+        """Extract answers from result panel text based on Excel structure."""
+        text = self.results_text.toPlainText()
+        if not text.strip():
+            QMessageBox.warning(self, "No Text", "No text in results panel to extract answers from.")
+            return
+        
+        # Use embedded API key
+        api_key = OPENAI_API_KEY
+        
+        # Get selected language
+        language_text = self.language_combo.currentText()
+        language_code = language_text.split(' ')[0]  # Extract language code
+        
+        # Disable summarize button and show progress
+        self.summarize_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.loading_label.setVisible(True)
+        
+        # Start summarization in worker thread with language setting
+        self.summarization_worker = SummarizationWorker(text, api_key, language_code)
+        self.summarization_worker.progress_updated.connect(self.update_progress)
+        self.summarization_worker.status_updated.connect(self.update_status)
+        self.summarization_worker.summarization_completed.connect(self.on_summarization_completed)
+        self.summarization_worker.summarization_failed.connect(self.on_summarization_failed)
+        self.summarization_worker.start()
+    
+    def classify_text(self):
+        """Classify the transcribed text."""
+        # Get current content from results panel (user may have edited it)
+        current_content = self.results_text.toPlainText()
+        if not current_content.strip():
+            QMessageBox.warning(self, "No Content", "Please convert and summarize text first, or ensure there is content in the results panel.")
+            return
+        
+        # Use embedded API key
+        api_key = OPENAI_API_KEY
+        
+        # Disable classification button and show progress
+        self.classification_button.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setValue(0)
+        self.loading_label.setVisible(True)
+        
+        # Prepare session output directory
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        session_output_dir = Path("./outputs") / timestamp
+        session_output_dir.mkdir(parents=True, exist_ok=True)
+        self.current_output_dir = session_output_dir
+
+        # Start classification in worker thread using current content
+        self.classification_worker = ClassificationWorker(current_content, api_key, session_output_dir)
+        self.classification_worker.progress_updated.connect(self.update_progress)
+        self.classification_worker.status_updated.connect(self.update_status)
+        self.classification_worker.classification_completed.connect(self.on_classification_completed)
+        self.classification_worker.classification_failed.connect(self.on_classification_failed)
+        self.classification_worker.start()
+    
+    def on_summarization_completed(self, summary):
+        """Handle successful summarization completion."""
+        self.summarized_text = summary
+        
+        # Update the results panel with the summary
+        self.results_text.setPlainText(summary)
+        
+        # Enable classification button
+        self.classification_button.setEnabled(True)
+        
+        # Reset UI
+        self.progress_bar.setVisible(False)
+        self.loading_label.setVisible(False)
+        # Note: summarize_button will be enabled by on_text_changed()
+        
+        # Show message about editing capability
+        QMessageBox.information(self, "Answer Extraction Complete", 
+                               "Answers have been successfully extracted from the text based on Excel structure.\n\n"
+                               "You can now edit the content in the results panel before classification if needed.")
+    
+    def on_summarization_failed(self, error):
+        """Handle summarization failure."""
+        QMessageBox.critical(self, "Summarization Failed", f"Failed to summarize text:\n\n{error}")
+        
+        # Reset UI
+        self.progress_bar.setVisible(False)
+        self.loading_label.setVisible(False)
+        self.summarize_button.setEnabled(True)
+    
+    def on_classification_completed(self, results):
+        """Handle successful classification completion."""
+        classification_results = results.get('classification', {})
+        insertion_results = results.get('insertion', {})
+        output_dir = results.get('output_dir')
+        
+        # Show results
+        result_text = "Classification Results:\n\n"
+        for summary_key in SUMMARY_KEYS:
+            content = classification_results.get(summary_key)
+            if not content:
+                continue
+
+            result_text += f"{summary_key}:\n"
+            if isinstance(content, dict):
+                for key, value in content.items():
+                    if isinstance(value, str) and value.strip():
+                        result_text += f"  {key}: {value}\n"
+            else:
+                result_text += f"  {content}\n"
+            result_text += "\n"
+
+        result_text += "Insertion Results:\n"
+        for summary_key in SUMMARY_KEYS:
+            info = insertion_results.get(summary_key)
+            if not info:
+                status = "No data"
+            else:
+                if info.get("success"):
+                    path = info.get("path")
+                    status = "✓ Success"
+                    if not info.get("has_data", False):
+                        status += " (template only)"
+                    if path:
+                        status += f" ({Path(path).name})"
+                else:
+                    status = "✗ Failed"
+                    error = info.get("error")
+                    if error:
+                        status += f" - {error}"
+            result_text += f"  {summary_key}: {status}\n"
+
+        if output_dir:
+            result_text += f"\nOutput directory: {output_dir}\n"
+        
+        # Update results panel (preserve edit mode)
+        current_edit_mode = not self.results_text.isReadOnly()
+        self.results_text.setPlainText(result_text)
+        if current_edit_mode:
+            self.results_text.setReadOnly(False)
+        
+        # Reset UI
+        self.progress_bar.setVisible(False)
+        self.loading_label.setVisible(False)
+        self.classification_button.setEnabled(True)
+        
+        QMessageBox.information(self, "Classification Complete", "Text has been successfully classified and inserted into Excel files.")
+    
+    def on_classification_failed(self, error):
+        """Handle classification failure."""
+        QMessageBox.critical(self, "Classification Failed", f"Failed to classify text:\n\n{error}")
+        
+        # Reset UI
+        self.progress_bar.setVisible(False)
+        self.loading_label.setVisible(False)
+        self.classification_button.setEnabled(True)
+
+
+def main():
+    """Main application entry point with error handling."""
+    import sys
+    import os
+    
+    # Add current directory to Python path
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    
+    try:
+        app = QApplication(sys.argv)
+        app.setApplicationName("Audio to Text Converter")
+        
+        # Set application style
+        app.setStyle('Fusion')
+        
+        window = AudioToTextGUI()
+        window.show()
+        
+        sys.exit(app.exec())
+        
+    except ImportError as e:
+        print(f"Error importing required modules: {e}")
+        print("\nPlease install the required dependencies:")
+        print("pip install -r requirements.txt")
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error starting the application: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()

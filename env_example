@@ -1,0 +1,19 @@
+# Copy this file to .env and fill in the appropriate values
+
+# OpenAI API configuration
+OPENAI_API_KEY=your-openai-api-key
+DEFAULT_MODEL=gpt-5
+MAX_TOKENS=1500
+TEMPERATURE=0.3
+
+# UI configuration
+WINDOW_TITLE=Audio to Text Converter with AI Analysis
+WINDOW_SIZE=1000,700
+SPLITTER_SIZES=350,650
+
+# Language configuration
+DEFAULT_LANGUAGE=ja-JP
+
+# Whisper configuration
+WHISPER_MODEL_SIZE=small
+AUDIO_CHUNK_LENGTH_SECONDS=60

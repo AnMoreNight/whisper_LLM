@@ -1,0 +1,15 @@
+PyQt6
+openai
+pandas
+openpyxl
+xlrd
+xlwt
+openai-whisper
+pydub
+torch
+python-dotenv
+pyinstaller
+# Note: If you encounter DLL errors with whisper on Python 3.13,
+# try: pip install numba==0.59.0 llvmlite==0.42.0
+# Or use Python 3.11 or 3.12 for better compatibility
+# Note: pydub requires ffmpeg to be installed on the system or available in PATH
