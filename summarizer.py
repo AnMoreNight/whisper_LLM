@@ -6,6 +6,7 @@ Handles text summarization and classification using OpenAI API.
 
 from openai import OpenAI
 import openpyxl
+from openpyxl.styles import Alignment
 import os
 import shutil
 from datetime import datetime
@@ -703,6 +704,14 @@ Transcript:
                 if cell_ref in mr:
                     return ws.cell(row=mr.min_row, column=mr.min_col).coordinate
             return cell_ref
+    
+    def set_cell_value_with_wrap(self, ws, cell_ref, value):
+        """Set cell value and enable text wrapping."""
+        actual_cell = self.resolve_target_cell(ws, cell_ref)
+        cell = ws[actual_cell]
+        cell.value = value
+        # Enable text wrapping and set vertical alignment to top
+        cell.alignment = Alignment(wrap_text=True, vertical='top')
     def get_load_wb(self, excel_path, output_filename: Optional[str] = None):
         """Load workbook by copying the template excel_path into the session output directory."""
         template_path = Path(excel_path)
@@ -777,8 +786,7 @@ Transcript:
 
         for label, cell_ref in cell_mapping.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws, cell_ref)
-            ws[actual_cell] = value
+            self.set_cell_value_with_wrap(ws, cell_ref, value)
 
         wb.save(saved_path)
         return saved_path
@@ -816,8 +824,7 @@ Transcript:
 
         for label, cell_ref in cell_mapping.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws, cell_ref)
-            ws[actual_cell] = value
+            self.set_cell_value_with_wrap(ws, cell_ref, value)
 
         wb.save(saved_path)
         return saved_path
@@ -858,8 +865,7 @@ Transcript:
 
         for label, cell_ref in cell_mapping.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws, cell_ref)
-            ws[actual_cell] = value
+            self.set_cell_value_with_wrap(ws, cell_ref, value)
 
         wb.save(saved_path)
         return saved_path
@@ -907,8 +913,7 @@ Transcript:
 
         for label, cell_ref in cell_mapping.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws, cell_ref)
-            ws[actual_cell] = value
+            self.set_cell_value_with_wrap(ws, cell_ref, value)
 
         wb.save(saved_path)
         return saved_path
@@ -949,8 +954,7 @@ Transcript:
 
         for label, cell_ref in cell_mapping.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws, cell_ref)
-            ws[actual_cell] = value
+            self.set_cell_value_with_wrap(ws, cell_ref, value)
 
         wb.save(saved_path)
         return saved_path
@@ -997,8 +1001,7 @@ Transcript:
 
         for label, cell_ref in cell_mapping.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws, cell_ref)
-            ws[actual_cell] = value
+            self.set_cell_value_with_wrap(ws, cell_ref, value)
 
         wb.save(saved_path)
         return saved_path
@@ -1027,8 +1030,7 @@ Transcript:
 
         for label, cell_ref in cell_mapping.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws, cell_ref)
-            ws[actual_cell] = value
+            self.set_cell_value_with_wrap(ws, cell_ref, value)
 
         wb.save(saved_path)
         return saved_path
@@ -1054,8 +1056,7 @@ Transcript:
 
         for label, cell_ref in cell_mapping.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws, cell_ref)
-            ws[actual_cell] = value
+            self.set_cell_value_with_wrap(ws, cell_ref, value)
 
         wb.save(saved_path)
         return saved_path
@@ -1142,13 +1143,11 @@ Transcript:
 
         for label, cell_ref in cell_mapping1.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws1, cell_ref)
-            ws1[actual_cell] = value
+            self.set_cell_value_with_wrap(ws1, cell_ref, value)
             
         for label, cell_ref in cell_mapping2.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws2, cell_ref)
-            ws2[actual_cell] = value
+            self.set_cell_value_with_wrap(ws2, cell_ref, value)
         wb.save(saved_path)
         return saved_path
 
@@ -1246,13 +1245,11 @@ Transcript:
 
         for label, cell_ref in cell_mapping1.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws1, cell_ref)
-            ws1[actual_cell] = value
+            self.set_cell_value_with_wrap(ws1, cell_ref, value)
 
         for label, cell_ref in cell_mapping2.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws2, cell_ref)
-            ws2[actual_cell] = value
+            self.set_cell_value_with_wrap(ws2, cell_ref, value)
 
         wb.save(saved_path)
         return saved_path
@@ -1351,12 +1348,10 @@ Transcript:
 
         for label, cell_ref in cell_mapping1.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws1, cell_ref)
-            ws1[actual_cell] = value
+            self.set_cell_value_with_wrap(ws1, cell_ref, value)
         for label, cell_ref in cell_mapping2.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws2, cell_ref)
-            ws2[actual_cell] = value
+            self.set_cell_value_with_wrap(ws2, cell_ref, value)
         wb.save(saved_path)
         return saved_path
 
@@ -1410,11 +1405,9 @@ Transcript:
 
         for label, cell_ref in cell_mapping1.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws1, cell_ref)
-            ws1[actual_cell] = value
+            self.set_cell_value_with_wrap(ws1, cell_ref, value)
         for label, cell_ref in cell_mapping2.items():
             value = data.get(label, "")
-            actual_cell = self.resolve_target_cell(ws2, cell_ref)
-            ws2[actual_cell] = value
+            self.set_cell_value_with_wrap(ws2, cell_ref, value)
         wb.save(saved_path)
         return saved_path

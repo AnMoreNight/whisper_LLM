@@ -8,8 +8,23 @@ import os
 import time
 import math
 import uuid
+from importlib import import_module
+
 from pydub import AudioSegment
 from PyQt6.QtCore import QThread, pyqtSignal
+
+
+def _detect_onnxruntime() -> bool:
+    for candidate in ("onnxruntime", "onnxruntime_gpu"):
+        try:
+            import_module(candidate)
+            return True
+        except ImportError:
+            continue
+    return False
+
+
+_has_onnxruntime = _detect_onnxruntime()
 
 class ConversionWorker(QThread):
     """Worker thread for audio conversion to prevent GUI freezing using Whisper."""
@@ -36,7 +51,7 @@ class ConversionWorker(QThread):
     
     def run(self):
         try:
-            self.status_updated.emit("Starting conversion...")
+            self.status_updated.emit("変換を開始します…")
             self.progress_updated.emit(0)
             
             # Check if file exists
@@ -48,7 +63,7 @@ class ConversionWorker(QThread):
                 raise Exception("Whisper model not provided. Please ensure model is loaded before conversion.")
            
             # Load audio file
-            self.status_updated.emit("🎧 Preparing audio...")
+            self.status_updated.emit("🎧 音声を準備しています…")
             self.progress_updated.emit(0)
             
             audio_path = os.path.abspath(self.file_path)
@@ -62,8 +77,8 @@ class ConversionWorker(QThread):
             num_chunks = math.ceil(duration_ms / chunk_length_ms)
             
             duration_minutes = duration_ms / 60000
-            self.status_updated.emit(f"🕒 Total duration: {duration_minutes:.1f} minutes")
-            self.partial_result_updated.emit(f"📦 Splitting into {num_chunks} chunks...")
+            self.status_updated.emit(f"🕒 総再生時間: 約 {duration_minutes:.1f} 分")
+            self.partial_result_updated.emit(f"📦 {num_chunks} 個のチャンクに分割しています…")
             self.progress_updated.emit(0)
             
             # Process audio in chunks
@@ -85,9 +100,22 @@ class ConversionWorker(QThread):
                 chunk.export(chunk_path, format="wav")
                 
                 # Transcribe chunk
-                self.status_updated.emit(f"📝 Transcribing chunk {i + 1}/{num_chunks}...")
-                result = self.model.transcribe(chunk_path, language=self.language, verbose=False)
-                text = result["text"].strip()
+                self.status_updated.emit(f"📝 チャンク {i + 1}/{num_chunks} を文字起こし中…")
+                segments, _info = self.model.transcribe(
+                    chunk_path,
+                    language=self.language,
+                    beam_size=5,
+                    vad_filter=_has_onnxruntime,
+                )
+
+                if not _has_onnxruntime and i == 0:
+                    self.status_updated.emit("⚠️ VAD フィルターを無効化しています（onnxruntime が見つかりません）")
+
+                chunk_text_parts = []
+                for segment in segments:
+                    chunk_text_parts.append(segment.text)
+
+                text = "".join(chunk_text_parts).strip()
                 paragraphs.append(text)
                 
                 # Update partial results progressively
@@ -97,7 +125,7 @@ class ConversionWorker(QThread):
                 percent = int(((i + 1) / num_chunks) * 100)
                 elapsed = time.time() - start_time
                 
-                self.status_updated.emit(f"📈 Extracted {percent}% text from audio... ⏱️ {elapsed:.1f}s")
+                self.status_updated.emit(f"📈 {percent}% のテキストを抽出しました ⏱️ {elapsed:.1f}秒")
                 
                 progress_value = int((percent / 100) * 100)
                 self.progress_updated.emit(progress_value)
@@ -112,7 +140,7 @@ class ConversionWorker(QThread):
                     except Exception:
                         pass
             
-            self.status_updated.emit("📈 Extracted 100% text from audio ✅")
+            self.status_updated.emit("📈 100% のテキストを抽出しました ✅")
             self.progress_updated.emit(100)
             
             # Merge paragraphs
